@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from tkinter.filedialog import askopenfilename  # For files opening
 from pathlib import Path  # For creating folder
 from datetime import datetime  # For time stamp
+from scipy.spatial.transform import Rotation as R  # For vector transformations
 
 
 # import sys  # For exceptions
@@ -39,26 +40,72 @@ class FiniteElement:
         # Calculating finite element's length
         self.L = np.linalg.norm(self.vector, ord=2)
 
-        # Creating matrices templates
+        # Rotation matrices
+        # Variables
+        self.CX = self.vector[0] / self.L
+        self.CY = self.vector[1] / self.L
+        self.CZ = self.vector[2] / self.L
+        self.alpha = np.arccos(self.CX)
+        self.betta = np.arccos(self.CY)
+        self.gamma = np.arccos(self.CZ)
+        self.axis_angle = 0
+        # Matrices
+        # Vector transformation matrix [γ]
+        self.vtm = np.zeros((self.type.vtm.shape[0], self.type.vtm.shape[1]))
+        # Element rotation matrix [Г]
+        self.erm = np.zeros((self.type.vtm.shape[0] * 2, self.type.vtm.shape[1] * 2))
+
+        # Creating sm matrices templates
         #
         # Stiffness Matrix in local coordinates
-        self.sm_local = np.zeros((len(self.type.matrix), len(self.type.matrix)))
+        self.sm_local = np.zeros((len(self.type.sm), len(self.type.sm)))
         # Stiffness Matrix in global coordinates
-        self.sm_global = np.zeros((len(self.type.matrix), len(self.type.matrix)))
+        self.sm_global = np.zeros((len(self.type.sm), len(self.type.sm)))
         # Rotation Matrix
-        self.rm = np.zeros((len(self.type.matrix), len(self.type.matrix)))
+        # self.rm = np.zeros((len(self.type.matrix), len(self.type.matrix)))
 
         # LN vector -- gives global dof for element's dof
         self.LM = []
 
     def set_sm_numerical_format(self):
-        for i in range(len(self.type.matrix)):
-            for j in range(len(self.type.matrix)):
+        # Evaluates formulas from input file k.csv and returns [k]_e in numbers
+        for i in range(len(self.type.sm)):
+            for j in range(len(self.type.sm)):
                 self.sm_local[i][j] = (
-                    eval(str(self.type.matrix.iloc[i, j]), {},
+                    eval(str(self.type.sm.iloc[i, j]), {},
                          {"E": self.stf.E, "A": self.stf.A, "I_z": self.stf.I_z, "L": self.L}))
                 # str - на случай, если на вход eval попадется integer
                 # с минусом получается
+
+    def set_vtm_numerical_format(self):
+        # Evaluates formulas from input file vtm.csv and returns vector transformation matrix [γ] of element in numbers
+        if self.is_vertical():
+            self.vtm_symbol = self.type.vtm_vertical
+        else:
+            self.vtm_symbol = self.type.vtm
+
+        for i in range(self.vtm_symbol.shape[0]):
+            for j in range(self.vtm_symbol.shape[1]):
+                self.vtm[i][j] = (
+                    eval(str(self.vtm_symbol.iloc[i, j]), {},
+                         {
+                             "CX": self.CX,
+                             "CY": self.CY,
+                             "CZ": self.CZ
+                         }))
+
+    def set_erm_numerical_format(self):
+        for i in range(self.type.vtm.shape[0]):
+            for j in range(self.type.vtm.shape[1]):
+                self.erm[i][j] = self.vtm[i][j]
+                self.erm[i + self.type.vtm.shape[0]][j + self.type.vtm.shape[1]] = self.vtm[i][j]
+
+    def set_sm_global(self):
+        self.sm_global = self.erm.T.dot(self.sm_local).dot(self.erm)
+
+    def is_vertical(self):
+        if self.sn.x - self.fn.x == 0 and self.sn.y - self.fn.y == 0:
+            return True
 
 
 class Node:
@@ -80,11 +127,16 @@ class Node:
 class FEType:  # Stiffness Matrix in symbol format
 
     def __init__(self, fe_type_name):
-        self.name = fe_type_name
+        # Element stiffness matrix [k]
+        self.sm_file_path = 'my_catalogues/input/fe_types/' + fe_type_name + '/k.csv'
+        self.sm = pd.read_csv(self.sm_file_path, header=None)
 
-        self.file_name = self.name + '.csv'
-        self.file_path = 'my_catalogues/input/fe_types/' + self.file_name
-        self.matrix = pd.read_csv(self.file_path, header=None)
+        # Vector transformation matrix [γ]
+        self.vtm_file_path = 'my_catalogues/input/fe_types/' + fe_type_name + '/vtm.csv'
+        self.vtm = pd.read_csv(self.vtm_file_path, header=None)
+        # Vector transformation matrix [γ] for vertical elements
+        self.vtm_vertical_file_path = 'my_catalogues/input/fe_types/' + fe_type_name + '/vtm_vertical.csv'
+        self.vtm_vertical = pd.read_csv(self.vtm_vertical_file_path, header=None)
 
 
 class Stiffness:
@@ -137,7 +189,7 @@ if __name__ == '__main__':
     log.write("\n")
     '''
     ###############################################################################################################
-    # IMPORTING DATA
+    # 1. IMPORTING DATA
     ###############################################################################################################
 
     # Initial data is imported from .csv files into object DataFrame of Pandas package
@@ -149,24 +201,21 @@ if __name__ == '__main__':
         nodes_file_name = askopenfilename()
         print("\n Choose elements file: ")
         elements_file_name = askopenfilename()
-        # print("\n Choose file of node load: ")
-        # node_load_file_name = askopenfilename()
         print("\n Choose file of node load: ")
         node_load_file_name = askopenfilename()
         print("\n Choose file of boundary conditions: ")
         bc_file_name = askopenfilename()
     else:
-        nodes_file_name = 'my_catalogues/input/examples/Пример1_задача_из_методички/Nodes.csv'
-        elements_file_name = 'my_catalogues/input/examples/Пример1_задача_из_методички/Elements.csv'
-        # node_load_file_name = 'my_catalogues/input/examples/Пример1_задача_из_методички/P.csv'
-        node_load_file_name = 'my_catalogues/input/examples/Пример1_задача_из_методички/P_for_K.csv'
-        bc_file_name = 'my_catalogues/input/examples/Пример1_задача_из_методички/BoundaryConditions.csv'
+        nodes_file_name = 'my_catalogues/input/examples/020_Example_FE2/1_Nodes.csv'
+        elements_file_name = 'my_catalogues/input/examples/020_Example_FE2/2_Elements.csv'
+        node_load_file_name = 'my_catalogues/input/examples/020_Example_FE2/3_P.csv'
+        bc_file_name = 'my_catalogues/input/examples/020_Example_FE2/4_BoundaryConditions.csv'
 
     # Reading .csv files
     nodes_file = pd.read_csv(nodes_file_name, header=0)
     elements_file = pd.read_csv(elements_file_name, header=0)
-    # node_load_file = pd.read_csv(node_load_file_name, header=None)
     node_load_file = pd.read_csv(node_load_file_name, header=None)
+    bc_file = pd.read_csv(bc_file_name, header=0)
 
     print('Nodes: ')
     print(nodes_file)
@@ -174,11 +223,14 @@ if __name__ == '__main__':
     print(elements_file)
     print('Node load: ')
     print(node_load_file)
+    print("Boundary conditions, ID^T:")
+    print(bc_file)
     print()
 
-    #
-    # INITIAL DATA
-    #
+    ###############################################################################################################
+    # 2. INITIAL DATA
+    ###############################################################################################################
+
     NODES_IN_FE = 2  # number of nodes in single FE
     NODES_TOTAL = len(nodes_file)  # number of nodes
 
@@ -186,53 +238,14 @@ if __name__ == '__main__':
     GC_j = [0, 1, 0]
     GC_k = [0, 0, 1]
 
-    ###############################################################################################################
-    # MAIN PART
-    ###############################################################################################################
-
-    #
-    # PROCESSING FINITE ELEMENTS
-    #
-
-    # Creating array of FE by ids from file
-    fe_array = []
-    for i in range(len(elements_file)):
-        fe = FiniteElement(elements_file.iloc[i, 0])  # [i,0] -- ids of FE in file "elements_file"
-        fe_array.append(fe)
-
-    # Назначение КЭ их МЖ в численном виде
-    for fe in fe_array:
-        fe.set_sm_numerical_format()
-        print("FE length:")
-        print(fe.L)
-        print()
-
-    print("\n МЖ первого КЭ в численном виде: ")
-    for line in fe_array[0].sm_local:
-        print(*line)
-
-    # Привести МЖ всех КЭ к общей размерности?
-
     ################################################################################################################
-    # TRANSFORMATION MATRICES
-    ################################################################################################################
-
-    # 4.1.2 Direction Cosines
-    #for fe in fe_array:
-
-
-    ################################################################################################################
-    # Boundary Conditions
+    # 3. Boundary Conditions
     ################################################################################################################
 
     # 5.2.1 Boundary Conditions, [ID] Matrix
-    # Reading the .csv file of Boundary Conditions
-    ID = pd.read_csv(bc_file_name, header=0)
-    print("ID^T:")
-    print(ID)
 
     # Reshaping BC matrix for further use
-    ID = ID.T
+    ID = bc_file.T
     new_header = ID.iloc[0]  # grab the first row for the header
     ID = ID[1:]  # take the data less the header row
     ID.columns = new_header  # set the header row as the df header
@@ -260,6 +273,16 @@ if __name__ == '__main__':
     print(ID)
     print()
 
+    ################################################################################################################
+    # 4. PROCESSING FINITE ELEMENTS
+    ################################################################################################################
+
+    # Creating array of FE by ids from file
+    fe_array = []
+    for i in range(len(elements_file)):
+        fe = FiniteElement(elements_file.iloc[i, 0])  # [i,0] -- ids of FE in file "elements_file"
+        fe_array.append(fe)
+
     # 5.2.2 LM Vector -- shows the global dof for each element
     for fe in fe_array:
         j_fn = fe.fn_id
@@ -268,12 +291,68 @@ if __name__ == '__main__':
             fe.LM.append(ID.iloc[i, j_fn])
         for i in range(ID.shape[0]):  # iterate over rows
             fe.LM.append(ID.iloc[i, j_sn])
-    print("fe[0] LM:")
-    print(fe_array[0].LM)
-    print("fe[1] LM:")
-    print(fe_array[1].LM)
+
+    # print("fe[0] LM:")
+    # print(fe_array[0].LM)
+    # print("fe[1] LM:")
+    # print(fe_array[1].LM)
+    for fe in fe_array:
+        print("[LM]_" + str(fe.id))
+        print(fe.LM)
     print()
 
+    # Назначение КЭ их МЖ в численном виде
+    for fe in fe_array:
+        print("FE_" + str(fe.id))
+        fe.set_sm_numerical_format()
+        print("Vector:")
+        print(fe.vector)
+        print("CX:" + str(fe.CX) + " CY:" + str(fe.CY) + " CZ:" + str(fe.CZ))
+        print("length:")
+        print(fe.L)
+        fe.set_vtm_numerical_format()
+        print("[γ]:")
+        print(fe.vtm)
+        fe.set_erm_numerical_format()
+        print("[Г]:")
+        print(fe.erm)
+        print()
+
+    # print("\n МЖ первого КЭ в численном виде: ")
+    # for line in fe_array[0].sm_local:
+    #     print(*line)
+
+    # Привести МЖ всех КЭ к общей размерности?
+
+    ################################################################################################################
+    # PLOTTING INITIAL DATA (fast draft)
+    ################################################################################################################
+
+    # Plotting schema
+    nodesXArray = []
+    nodesYArray = []
+    for fe in fe_array:
+        nodesXArray.append(fe.fn.x)
+        nodesYArray.append(fe.fn.y)
+        nodesXArray.append(fe.sn.x)
+        nodesYArray.append(fe.sn.y)
+    plt.plot(nodesXArray, nodesYArray, '-ok')
+    # plt.show()
+
+    # Plotting Loads
+
+    ################################################################################################################
+    # TRANSFORMATION MATRICES
+    ################################################################################################################
+
+    for fe in fe_array:
+        fe.set_sm_global()
+        print("[K]_" + str(fe.id))
+        print(fe.sm_global)
+
+    ################################################################################################################
+    # GLOBAL STIFFNESS MATRIX
+    ################################################################################################################
     #
     # 5.2.3 Assembly of Global Stiffness Matrix
     #
@@ -283,11 +362,11 @@ if __name__ == '__main__':
     print()
 
     for fe in fe_array:
-        for i in range(fe.sm_local.shape[0]):  # iterate over rows
-            for j in range(fe.sm_local.shape[1]):  # iterate over columns
+        for i in range(fe.sm_global.shape[0]):  # iterate over rows
+            for j in range(fe.sm_global.shape[1]):  # iterate over columns
                 i_K = abs(fe.LM[i])
                 j_K = abs(fe.LM[j])
-                K[i_K, j_K] = K[i_K, j_K] + fe.sm_local[i, j]
+                K[i_K, j_K] = K[i_K, j_K] + fe.sm_global[i, j]
 
     print("K:")
     print(K)
@@ -329,7 +408,7 @@ if __name__ == '__main__':
     # Reading node load file
     P_t = np.zeros((len(node_load_file), 1))
     for i in range(len(node_load_file)):
-        P_t[i][0] = (eval(node_load_file.iloc[i, 0]))
+        P_t[i][0] = (eval(str(node_load_file.iloc[i, 0])))
     print("P_t:")
     print(P_t)
     print()
